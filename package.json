@@ -1,0 +1,22 @@
+{
+  "name": "@vaporlogicgp/express-jwt-validator",
+  "version": "1.0.0",
+  "description": "Express middleware for JWT signature validation and claim verification",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vaporlogic/express-jwt-validator.git"
+  },
+  "main": "index.js",
+  "keywords": [
+    "jwt",
+    "express",
+    "middleware",
+    "auth",
+    "token"
+  ],
+  "author": "jwt-middleware-oss",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14"
+  }
+}
